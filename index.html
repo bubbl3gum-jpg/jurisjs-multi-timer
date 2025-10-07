@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JurisJS Multi‑Timer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg:#0b0d10; --panel:#13161a; --muted:#96a0ad; --text:#e6edf3; --accent:#4da6ff; --danger:#ff6b6b; --ok:#22c55e; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      display: grid; place-items: start center; padding: 24px;
+    }
+    .app { width: min(940px, 100%); }
+    .title { font-weight: 800; font-size: 28px; letter-spacing: 0.2px; margin: 0 0 16px; }
+    .subtitle { color: var(--muted); margin: 0 0 20px; }
+    .panel { background: var(--panel); border: 1px solid #1e232a; border-radius: 14px; padding: 16px; }
+    .grid { display: grid; gap: 12px; }
+    .form-grid { grid-template-columns: 1.2fr 0.7fr 1.4fr auto; align-items: end; }
+    label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+    input { width: 100%; background: #0f1317; border: 1px solid #232a33; color: var(--text); border-radius: 10px; padding: 10px 12px; outline: none; }
+    input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77,166,255,.15); }
+    button { cursor: pointer; border: 1px solid #263140; background: #121821; color: var(--text); border-radius: 10px; padding: 10px 14px; font-weight: 600; }
+    button.primary { background: linear-gradient(180deg, #2f79ff, #1b4bb9); border-color: #2f79ff; }
+    button.ghost { background: transparent; border-color: #2a333f; }
+    button.danger { background: #3a1114; border-color: #592026; color: #ff9aa2; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .timers { margin-top: 16px; display: grid; gap: 10px; }
+    .card { background: #0f1216; border: 1px solid #1f242c; border-radius: 12px; padding: 12px; }
+    .card.done { border-color: #2b4d2f; box-shadow: 0 0 0 2px rgba(34,197,94,0.15) inset; }
+    .card.running { border-color: #203955; }
+    .card .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .name { font-weight: 700; }
+    .status { font-size: 12px; color: var(--muted); }
+    .time { font-feature-settings: "tnum" on, "ss01" on; font-variant-numeric: tabular-nums; font-weight: 800; font-size: 28px; letter-spacing: 1px; }
+    .pill { border: 1px dashed #273141; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: var(--muted); }
+    .msg { color: #c7f9cc; font-weight: 600; }
+    .hint { font-size: 12px; color: var(--muted); }
+    .footer { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    .empty { text-align: center; color: var(--muted); padding: 24px 12px; border: 1px dashed #273141; border-radius: 12px; }
+    .demo-note { margin-top: 8px; }
+    .tests { margin-top: 16px; background: #0f1216; border: 1px solid #1f242c; border-radius: 12px; padding: 12px; }
+    .tests.pass { border-color: #284b2f; }
+    .tests.fail { border-color: #5a1f1f; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <!-- JurisJS CDN (required by spec). We also provide a defensive polyfill below. -->
+  <script src="https://jurisjs.com/juris.js"></script>
+
+  <div id="app" class="app"></div>
+
+  <script>
+  // === JurisJS createApp POLYFILL (fixes: Juris.createApp is not a function) ======
+  (function(){
+    const J = (typeof window !== 'undefined') ? (window.Juris || (window.Juris = {})) : {};
+    const hasCreate = typeof J.createApp === 'function';
+    if (!hasCreate) {
+      console.warn('[Multi-Timer] Using built-in Juris.createApp polyfill because the CDN did not expose createApp().');
+      J.createApp = function(root, initialState, view){
+        let state = JSON.parse(JSON.stringify(initialState));
+        const listeners = new Set();
+        const getState = () => state;
+        const setState = (updater) => {
+          state = (typeof updater === 'function') ? updater(state) : updater;
+          listeners.forEach(fn => fn());
+        };
+        const render = () => { root.innerHTML = view({ getState, setState }); };
+        listeners.add(render);
+        render();
+        return { getState, setState, render };
+      };
+    }
+  })();
+  // ================================================================================
+
+  // ===== Utilities ================================================================
+  const STORAGE_KEY = 'juris-multi-timer-v1';
+
+  const uuid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+  function parseDuration(input) {
+    if (!input) return NaN;
+    const s = String(input).trim();
+    if (/^\d+$/.test(s)) return Math.max(0, parseInt(s, 10));
+    const mmss = s.split(':');
+    if (mmss.length === 2) {
+      const m = parseInt(mmss[0], 10), sec = parseInt(mmss[1], 10);
+      if (Number.isFinite(m) && Number.isFinite(sec) && m >= 0 && sec >= 0 && sec < 60) return m * 60 + sec;
+    }
+    return NaN;
+  }
+
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const m = Math.floor(sec / 60).toString().padStart(2, '0');
+    const s = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; }
+  }
+
+  function save(timers) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(timers));
+  }
+
+  // Optional: gentle beep when a timer completes
+  async function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = 880; o.type = 'sine';
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
+      o.start();
+      setTimeout(()=>{ g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1); o.stop(ctx.currentTime + 0.12); }, 450);
+    } catch {}
+  }
+
+  function notify(title, body) {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body });
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission().then(p => { if (p === 'granted') new Notification(title, { body }); });
+    }
+  }
+
+  // ===== App State & Logic ========================================================
+  const initialTimers = load();
+  // Normalize timers on boot (ensure running timers keep correct remaining)
+  const now = Date.now();
+  for (const t of initialTimers) {
+    if (t.status === 'running' && typeof t.endsAt === 'number') {
+      const remain = Math.max(0, Math.floor((t.endsAt - now) / 1000));
+      if (remain <= 0) {
+        t.status = 'done'; t.remainSec = 0; t.endsAt = null;
+      } else {
+        t.remainSec = remain; // live remaining; will be recomputed on ticks
+      }
+    }
+  }
+
+  const app = Juris.createApp(document.getElementById('app'), { timers: initialTimers }, ({ getState, setState }) => {
+    const { timers } = getState();
+
+    const renderTimer = (t) => {
+      const running = t.status === 'running';
+      const done = t.status === 'done';
+      const remain = running && typeof t.endsAt === 'number' ? Math.max(0, Math.floor((t.endsAt - Date.now()) / 1000)) : t.remainSec;
+      const statusText = done ? 'done' : running ? 'running' : (t.status);
+      const friendly = done ? `<span class="msg">${t.message || "Time’s up!"}</span>` : `<span class="pill">original: ${fmt(t.durationSec)}</span>`;
+      return `
+        <div class="card ${running ? 'running' : ''} ${done ? 'done' : ''}">
+          <div class="top">
+            <div>
+              <div class="name">${t.name}</div>
+              <div class="status">status: ${statusText}</div>
+            </div>
+            <div class="time" aria-label="remaining time">${fmt(remain)}</div>
+          </div>
+          <div class="footer">
+            <div class="hint">${friendly}</div>
+            <div class="controls">
+              <button class="ghost" data-action="start" data-id="${t.id}" ${running || done ? 'disabled' : ''}>Start</button>
+              <button class="ghost" data-action="pause" data-id="${t.id}" ${running ? '' : 'disabled'}>Pause</button>
+              <button class="ghost" data-action="reset" data-id="${t.id}">Reset</button>
+              <button class="danger" data-action="remove" data-id="${t.id}">Delete</button>
+            </div>
+          </div>
+        </div>`;
+    };
+
+    return `
+      <h1 class="title">⏱️ Multi‑Timer (JurisJS)</h1>
+      <p class="subtitle">Create multiple independent timers - you can add new timers even while others are running! Start/Pause/Reset/Delete individual timers. Auto‑saves to localStorage and restores across refresh. When a timer finishes, it highlights and shows its message.</p>
+
+      <div class="panel grid form-grid" id="add-form">
+        <div>
+          <label for="name">Name</label>
+          <input id="name" placeholder="e.g., Pasta, Study Break" />
+        </div>
+        <div>
+          <label for="duration">Duration (sec or mm:ss)</label>
+          <input id="duration" placeholder="90 or 02:30" />
+        </div>
+        <div>
+          <label for="message">Message (optional)</label>
+          <input id="message" placeholder="Time’s up!" />
+        </div>
+        <div>
+          <button class="primary" id="addBtn">Add Timer</button>
+          <div class="demo-note hint">Tip: Try <b>"Tea"</b>, <b>"02:00"</b>, message: <b>"Enjoy!"</b><br/>💡 You can add multiple timers simultaneously!</div>
+        </div>
+      </div>
+
+      <div class="timers">
+        ${timers.length ? timers.map(renderTimer).join('') : `<div class="empty">No timers yet. Add one above ✨</div>`}
+      </div>
+
+      <details class="tests" id="testsBox"><summary><b>Self‑tests</b> (click to expand)</summary><div id="tests"></div></details>
+
+      <p class="hint" style="margin-top:12px">Optional screencast demo link: <a href="#" onclick="alert('Placeholder for your 30–60s demo link')">Add yours here</a></p>
+    `;
+  });
+
+  // Imperative event wiring
+  const root = document.getElementById('app');
+  function readInput(id){ return (root.querySelector('#'+id)?.value || '').trim(); }
+  function clearInput(id){ const el = root.querySelector('#'+id); if (el) el.value = ''; }
+
+  // Add timer
+  root.addEventListener('click', (e)=>{
+    const addBtn = e.target.closest('#addBtn');
+    if (!addBtn) return;
+    
+    // Prevent multiple rapid clicks
+    if (addBtn.disabled) return;
+    addBtn.disabled = true;
+    
+    const name = readInput('name');
+    const durationRaw = readInput('duration');
+    const message = readInput('message') || "Time's up!";
+
+    const durationSec = parseDuration(durationRaw);
+    const errors = [];
+    if (!name) errors.push('Name is required.');
+    if (!Number.isFinite(durationSec) || durationSec <= 0) errors.push('Duration must be a positive number (seconds or mm:ss).');
+    if (errors.length) { 
+      alert(errors.join('\n')); 
+      addBtn.disabled = false;
+      return; 
+    }
+
+    const t = { id: uuid(), name, durationSec, endsAt: null, remainSec: durationSec, message, status: 'idle' };
+    app.setState(s => ({ ...s, timers: [t, ...s.timers] }));
+    save(app.getState().timers);
+
+    clearInput('name'); clearInput('duration'); clearInput('message');
+    
+    // Re-enable button after a short delay to prevent double-clicks
+    setTimeout(() => {
+      addBtn.disabled = false;
+    }, 100);
+    
+    app.render();
+  });
+
+  // Delegated timer controls
+  root.addEventListener('click', (e)=>{
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const id = btn.getAttribute('data-id');
+    const action = btn.getAttribute('data-action');
+    const s = app.getState();
+    const timers = s.timers.map(t=>({ ...t }));
+    const i = timers.findIndex(t=>t.id===id);
+    if (i===-1) return;
+    const t = timers[i];
+
+    if (action === 'start' && (t.status === 'idle' || t.status === 'paused')) {
+      const base = t.status === 'idle' ? t.durationSec : t.remainSec;
+      t.endsAt = Date.now() + base * 1000; t.status = 'running';
+      if (('Notification' in window) && Notification.permission === 'default') Notification.requestPermission();
+    }
+    if (action === 'pause' && t.status === 'running') {
+      const remain = Math.max(0, Math.floor((t.endsAt - Date.now())/1000));
+      t.remainSec = remain; t.endsAt = null; t.status = 'paused';
+    }
+    if (action === 'reset') {
+      t.endsAt = null; t.remainSec = t.durationSec; t.status = 'idle';
+    }
+    if (action === 'remove') {
+      timers.splice(i,1);
+    }
+
+    app.setState({ timers });
+    save(app.getState().timers);
+    app.render();
+  });
+
+  // One global interval for all running timers
+  setInterval(()=>{
+    const s = app.getState();
+    let changed = false;
+    const now = Date.now();
+    const timers = s.timers.map(t => {
+      if (t.status === 'running' && typeof t.endsAt === 'number') {
+        const remain = Math.max(0, Math.floor((t.endsAt - now)/1000));
+        if (remain !== t.remainSec) { t = { ...t, remainSec: remain }; changed = true; }
+        if (remain <= 0) {
+          t = { ...t, status: 'done', endsAt: null, remainSec: 0 };
+          changed = true;
+          beep();
+          notify(`${t.name} finished`, t.message || "Time’s up!");
+        }
+      }
+      return t;
+    });
+    if (changed) { app.setState({ timers }); save(timers); app.render(); }
+  }, 250);
+
+  // ===== Self-tests (added) =======================================================
+  (function runTests(){
+    const cases = [];
+    const add = (name, actual, expected) => cases.push({ name, actual, expected, pass: (Number.isNaN(expected) ? Number.isNaN(actual) : actual === expected) });
+
+    // parseDuration tests
+    add('parseDuration("90") => 90', parseDuration('90'), 90);
+    add('parseDuration("02:30") => 150', parseDuration('02:30'), 150);
+    add('parseDuration("0:59") => 59', parseDuration('0:59'), 59);
+    add('parseDuration("5:00") => 300', parseDuration('5:00'), 300);
+    add('parseDuration("12:60") => NaN (invalid seconds)', parseDuration('12:60'), NaN);
+    add('parseDuration("abc") => NaN', parseDuration('abc'), NaN);
+    add('parseDuration("  7  ") => 7', parseDuration('  7  '), 7);
+
+    // fmt tests
+    add('fmt(0) => 00:00', fmt(0), '00:00');
+    add('fmt(59) => 00:59', fmt(59), '00:59');
+    add('fmt(60) => 01:00', fmt(60), '01:00');
+    add('fmt(125) => 02:05', fmt(125), '02:05');
+
+    const passCount = cases.filter(c => c.pass).length;
+    const el = document.getElementById('tests');
+    const box = document.getElementById('testsBox');
+    if (box) box.classList.add(passCount === cases.length ? 'pass' : 'fail');
+    if (el) {
+      el.innerHTML = `
+        <div class="hint">${passCount}/${cases.length} assertions passed.</div>
+        <ul>${cases.map(c => `<li>${c.pass ? '✅' : '❌'} <code>${c.name}</code> (actual: <code>${String(c.actual)}</code> | expected: <code>${String(c.expected)}</code>)</li>`).join('')}</ul>
+      `;
+    }
+    // Also echo to console
+    console.group('Self-tests');
+    cases.forEach(c => console[c.pass ? 'log' : 'error'](`${c.pass ? 'PASS' : 'FAIL'}: ${c.name} -> actual=${c.actual}, expected=${c.expected}`));
+    console.groupEnd();
+  })();
+
+  </script>
+</body>
+</html>
